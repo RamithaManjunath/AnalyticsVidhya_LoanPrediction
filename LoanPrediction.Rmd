@@ -1,0 +1,350 @@
+---
+title: "Loan Prediction"
+author: "Ramitha"
+output:
+    html_document:
+      highlight: textmate
+      theme: spacelab
+      df_print: paged
+      toc: yes
+      code_folding: show
+      code_download: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width=12, fig.height=10, dpi = 72)
+```
+
+## 1. Loading data 
+
+```{r message=FALSE, warning=FALSE}
+set.seed(1234)
+
+# install and load all libraries we'll need
+load.libraries <- c('knitr','radiant', 'caret', 'RANN','radiant', 'dplyr', 'randomForest')
+install.lib <- load.libraries[!load.libraries %in% installed.packages()]
+for(libs in install.lib) install.packages(libs, dependences = TRUE)
+sapply(load.libraries, require, character = TRUE)
+
+# load data in R
+train <- read.csv("train.csv", stringsAsFactors = FALSE)
+test <- read.csv("test.csv", stringsAsFactors = FALSE)
+```
+
+## 2. Data Prep
+
+### 2.a Visualize
+
+```{r}
+str(train)
+```
+
+5 numeric cols and 8 factor vars. Loan_ID can be the row name
+
+```{r}
+rownames(train) <- train$Loan_ID
+rownames(test) <- test$Loan_ID
+
+train$Loan_ID <- NULL
+test$Loan_ID <- NULL
+
+train[train$Gender == "", ]$Gender <- "Male"
+test[test$Gender == "", ]$Gender <- "Male"
+train$Gender <- factor(train$Gender)
+test$Gender <- factor(test$Gender)
+
+train[train$Married == "", ]$Married <- "Yes"
+#test[test$Married == "", ]$Married <- "Yes"
+train$Married <- factor(train$Married)
+test$Married <- factor(test$Married)
+
+train[train$Dependents == "", ]$Dependents <- "0"
+test[test$Dependents == "", ]$Dependents <- "0"
+train$Dependents <- factor(train$Dependents)
+test$Dependents <- factor(test$Dependents)
+
+train$Education <- factor(train$Education)
+test$Education <- factor(test$Education)
+
+train[train$Self_Employed == "", ]$Self_Employed <- "No"
+test[test$Self_Employed == "", ]$Self_Employed <- "No"
+train$Self_Employed <- factor(train$Self_Employed)
+test$Self_Employed <- factor(test$Self_Employed)
+
+train[is.na(train$Loan_Amount_Term),]$Loan_Amount_Term <- 360
+test[is.na(test$Loan_Amount_Term),]$Loan_Amount_Term <- 360
+train$Loan_Amount_Term <- factor(train$Loan_Amount_Term)
+test$Loan_Amount_Term <- factor(test$Loan_Amount_Term)
+
+train[is.na(train$Credit_History),]$Credit_History <- "Missing"
+test[is.na(test$Credit_History),]$Credit_History <- "Missing"
+train$Credit_History <- factor(train$Credit_History)
+test$Credit_History <- factor(test$Credit_History)
+
+train$Property_Area <- factor(train$Property_Area)
+test$Property_Area <- factor(test$Property_Area)
+train$Loan_Status <- factor(train$Loan_Status)
+#test$Loan_Status <- factor(test$Loan_Status)
+
+table(train$Loan_Status)
+```
+
+We see that the data is biased for Loan_status = Y. Meaning there are more examples of approved loans than denied ones, which mirrors the reality. So our model may not do well prediction denied loans as it doesn't have enough examples. Let us see below how we could improve our model for such imbalaced data.  
+
+**TRAIN**
+
+```{r}
+visualize(dataset = "train", xvar = colnames(train), 
+          yvar = "count", bins = 20, custom = FALSE)
+```
+
+**TEST**
+
+```{r}
+visualize(dataset = "test", xvar = colnames(test), 
+          yvar = "count", bins = 20, custom = FALSE)
+```
+
+Here we see that:
+
+Gender, Married, Dependents and Self_Employed all have extra levels for missing values. As the test data also has such occurances, we do not impute it here. 
+
+### 2.b Missing Values
+
+```{r}
+colSums(is.na(train))
+```
+
+All 3 columns with missing values are numeric variables. Let us impute these values using KNN
+
+```{r}
+# Fill LoanAmount missing values
+train[is.na(train$LoanAmount),]$LoanAmount <- mean(train$LoanAmount, na.rm = TRUE)
+test[is.na(test$LoanAmount),]$LoanAmount <- mean(train$LoanAmount, na.rm = TRUE)
+
+# normalise
+train$LoanAmount <- (train$LoanAmount - mean(train$LoanAmount)) / sd(train$LoanAmount)
+test$LoanAmount <- (test$LoanAmount - mean(train$LoanAmount)) / sd(train$LoanAmount)
+
+# outlier - capped to 3 sigma
+train$LoanAmount <- ifelse(train$LoanAmount > 3, 3, 
+                           ifelse(train$LoanAmount < -3, -3, train$LoanAmount))
+test$LoanAmount <- ifelse(test$LoanAmount > 3, 3, 
+                           ifelse(test$LoanAmount < -3, -3, test$LoanAmount))
+
+## log of ApplicantIncome, CoapplicantIncome and loan amount
+# train$LoanAmount <- log(train$LoanAmount)
+# test$LoanAmount <- log(test$LoanAmount)
+
+# get single value for Applicant and co-applicant income
+train$income <- train$ApplicantIncome + 0.5*train$CoapplicantIncome
+test$income <- test$ApplicantIncome + 0.5*test$CoapplicantIncome
+train$ApplicantIncome <- NULL
+train$CoapplicantIncome <- NULL
+test$ApplicantIncome <- NULL
+test$CoapplicantIncome <- NULL
+
+# normalise
+train$income <- (train$income - mean(train$income)) / sd(train$income)
+test$income <- (test$income - mean(train$income)) / sd(train$income)
+
+# outlier
+train$income <- ifelse(train$income > 3, 3, 
+                           ifelse(train$income < -3, -3, train$income))
+test$income <- ifelse(test$income > 3, 3, 
+                           ifelse(test$income < -3, -3, test$income))
+
+# train$income <- log(train$income)
+# test$income <- log(test$income)
+
+# center and scale
+# preProcValues <- preProcess(train, method = c("knnImpute","center","scale"))
+
+#train_processed <- predict(preProcValues, train)
+#colSums(is.na(train_processed))
+
+## same on test
+#test_processed <- predict(preProcValues, test)
+
+visualize(
+  dataset = "train", 
+  xvar = "Loan_Status", 
+  yvar = c("LoanAmount", "income"), 
+  type = "scatter", 
+  custom = FALSE)
+```
+
+
+We have also centered and scaled the variables to represent data in terms of mean and sd
+
+### 2.c Creating dummy variables
+
+```{r}
+train_processed <- train
+test_processed <- test
+
+# safe guard target from getting converted to dummy vars
+train_processed$Loan_Status <- ifelse(train_processed$Loan_Status=='N',0,1)
+
+dmy <- dummyVars(" ~ .", data = train_processed,fullRank = T)
+train_processed <- data.frame(predict(dmy, newdata = train_processed))
+
+train_processed$Loan_Status <- as.factor(train_processed$Loan_Status)
+
+## same for test
+dmy <- dummyVars(" ~ .", data = test_processed,fullRank = T)
+test_processed <- data.frame(predict(dmy, newdata = test_processed))
+
+```
+
+### 2.d Train, Test and Validation set
+
+```{r}
+index <- createDataPartition(train_processed$Loan_Status, p=0.75, list=FALSE)
+trainSet <- train_processed[ index,]
+testSet <- train_processed[-index,]
+```
+
+## 3. Feature Selection
+
+```{r message=FALSE, warning=FALSE, results='hide'}
+control <- rfeControl(functions = rfFuncs,
+                   method = "repeatedcv",
+                   repeats = 5,
+                   verbose = FALSE)
+outcomeName<-'Loan_Status'
+predictors <- names(trainSet)[!names(trainSet) %in% outcomeName]
+start_time <- Sys.time()
+imp_vars <- rfe(trainSet[,predictors], 
+                trainSet[,outcomeName], 
+                rfeControl = control) #, sizes=c(1:22))
+end_time <- Sys.time()
+print(end_time - start_time)
+imp_vars
+#plot(imp_vars, type=c("g", "o"))
+```
+
+Important variables are are shown above. We use these as predictors
+
+```{r}
+predictors<-c("Credit_History.1", "Credit_History.Missing", "Loan_Amount_Term.480", "income", "Married.Yes", "Property_Area.Semiurban")
+```
+
+
+## 4. Model
+
+Let us try Random Forest and GLM on the data
+
+```{r message=FALSE, warning=FALSE, results='hide'}
+model_gbm <- train(trainSet[,predictors],trainSet[,outcomeName],method='gbm')
+model_rf <- train(trainSet[,predictors],trainSet[,outcomeName],method='rf')
+#model_nnet <- train(trainSet[,predictors],trainSet[,outcomeName],method='nnet')
+#model_glm <- train(trainSet[,predictors],trainSet[,outcomeName],method='glm')
+```
+
+```{r}
+predictions<-predict.train(object=model_gbm,testSet[,predictors],type="raw")
+table(predictions)
+confusionMatrix(predictions,testSet[,outcomeName])
+```
+
+
+```{r}
+predictions <- predict.train(object=model_rf,test_processed[,predictors],type="raw")
+
+sub <- as.data.frame(rownames(test))
+sub$pred <- predictions
+colnames(sub) <- c("Loan_ID", "Loan_Status")
+sub$Loan_Status <- ifelse(sub$Loan_Status == 1, "Y", "N")
+#write.csv(sub, "rf_6vars.csv", row.names = FALSE)
+```
+
+### Undersampling
+
+```{r message=FALSE, warning=FALSE, results='hide'}
+ctrl <- trainControl(method = "repeatedcv", 
+                     number = 10, 
+                     repeats = 5, 
+                     verboseIter = FALSE,
+                     sampling = "down")
+
+# model_rf_under <- caret::train(Loan_Status ~ .,
+#                          data = trainSet,
+#                          method = "gbm",
+#                          preProcess = c("scale", "center"),
+#                          trControl = ctrl)
+
+model_gbm_under <- train(trainSet[,predictors],trainSet[,outcomeName],method='gbm', trControl = ctrl)
+
+final_under <- data.frame(actual = testSet$Loan_Status,
+                    predict(model_gbm_under, newdata = testSet[,predictors], type = "prob"))
+final_under$predict <- ifelse(final_under$X0 > 0.8, 0, 1)
+
+cm_under <- confusionMatrix(final_under$predict, testSet$Loan_Status)
+#cm_under
+
+## Best is 0.8
+
+```
+```{r}
+cm_under
+```
+
+
+```{r}
+final_under <- predict(model_gbm_under, newdata = test_processed[,predictors], type = "prob")
+
+final_under$predict <- ifelse(final_under$`0` > 0.8, 0, 1)
+
+sub <- as.data.frame(rownames(test))
+sub$pred <- final_under$predict
+colnames(sub) <- c("Loan_ID", "Loan_Status")
+sub$Loan_Status <- ifelse(sub$Loan_Status == 1, "Y", "N")
+write.csv(sub, "gbm_smote_0.8.csv", row.names = FALSE)
+```
+
+### Parameter Tuning
+
+```{r}
+modelLookup(model='rf')
+
+# For rf
+grid <- expand.grid(.mtry=c(1:5))
+
+# For gbm
+# grid <- expand.grid(n.trees=c(10,20,50,100,500,1000),
+#                     shrinkage=c(0.01,0.05,0.1,0.5),
+#                     n.minobsinnode = c(3,5,10),
+#                     interaction.depth=c(1,5,10))
+
+ctrl <- trainControl(method = "repeatedcv", 
+                     number = 5, 
+                     repeats = 5, 
+                     verboseIter = FALSE,
+                     sampling = "down")
+
+model_rf <- train(trainSet[,predictors],
+                   trainSet[,outcomeName],
+                   method='rf',
+                   trControl=ctrl,
+                   tuneGrid=grid)
+#print(model_gbm)
+
+#plot(model_gbm) 
+```
+```{r}
+model_rf
+```
+
+```{r}
+final_under <- predict(model_rf, newdata = test_processed[,predictors], type = "prob")
+
+final_under$predict <- ifelse(final_under$`0` > 0.65, 0, 1)
+
+sub <- as.data.frame(rownames(test))
+sub$pred <- final_under$predict
+colnames(sub) <- c("Loan_ID", "Loan_Status")
+sub$Loan_Status <- ifelse(sub$Loan_Status == 1, "Y", "N")
+write.csv(sub, "rf_tuned.csv", row.names = FALSE)
+```
