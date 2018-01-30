@@ -1,5 +1,6 @@
 # AnalyticsVidhya_LoanPrediction
-My solution to an imbalanced data problem
+Imbalanced data problem
 
 View the HTML here:
 
+https://rawgit.com/RamithaManjunath/AnalyticsVidhya_LoanPrediction/master/LoanPrediction.html
